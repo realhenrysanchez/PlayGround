@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>The Most Peaceful Game — Zen Bubble Garden</title>
+<style>
+  :root {
+    --bg-top:    #f4e7e7;
+    --bg-mid:    #e8dff0;
+    --bg-bottom: #dcedf1;
+    --accent:    #ffb7b2;
+    --accent2:   #c3b1e1;
+    --accent3:   #a2d2ff;
+    --ink:       #5b4a6a;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: linear-gradient(180deg, var(--bg-top), var(--bg-mid), var(--bg-bottom));
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #canvas {
+    display: block;
+    width: 100%; height: 100%;
+    cursor: crosshair;
+  }
+  .hud {
+    position: absolute; top: 14px; left: 14px; right: 14px;
+    display: flex; flex-direction: column; gap: 8px;
+    pointer-events: none;
+    opacity: 0.75; transition: opacity .25s;
+  }
+  .hud:hover { opacity: 1; }
+  .hint {
+    font-size: 13px; letter-spacing: .06em; text-transform: uppercase;
+    color: rgba(91,74,106,.55); text-align: center; font-weight: 600;
+  }
+  .title {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    font-size: clamp(26px, 6vw, 44px); font-weight: 700; letter-spacing: .04em;
+    color: rgba(91,74,106,.65); text-align: center; pointer-events: none;
+    opacity: 1; transition: opacity 1.2s ease;
+    user-select: none;
+  }
+  .title.fade { opacity: 0; }
+  .controls {
+    position: absolute; bottom: 16px; left: 0; right: 0;
+    display: flex; justify-content: center; gap: 14px; pointer-events: none;
+  }
+  .ctrl {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    color: rgba(91,74,106,.45); font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+  }
+  .ctrl kbd {
+    width: 36px; height: 36px; border-radius: 10px;
+    background: rgba(255,255,255,.7); backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,.55); box-shadow: 0 2px 6px rgba(0,0,0,.06);
+    display: grid; place-items: center; font-weight: 700; color: var(--ink);
+    font-size: 14px; pointer-events: auto; cursor: pointer; user-select: none;
+  }
+  .ctrl kbd:active { transform: scale(.94); background: #fff; }
+  .muted {
+    position: absolute; top: 10px; right: 10px; pointer-events: auto;
+  }
+  .muted button {
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 1px solid rgba(255,255,255,.6); background: rgba(255,255,255,.75);
+    backdrop-filter: blur(6px); box-shadow: 0 2px 8px rgba(0,0,0,.08);
+    color: var(--ink); font-size: 16px; cursor: pointer; display: grid; place-items: center;
+  }
+  .muted button.off { background: rgba(91,74,106,.15); border-color: rgba(91,74,106,.35); color: rgba(91,74,106,.5); }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<div class="title" id="title">Zen Bubble Garden</div>
+
+<div class="hud">
+  <div class="hint">hold to blow a bubble&nbsp;&bull;&nbsp;release to let it float away</div>
+</div>
+
+<div class="controls">
+  <div class="ctrl"><kbd id="btnClear">↻</kbd><span>clear garden</span></div>
+</div>
+
+<div class="muted"><button id="btnAudio" title="toggle sound">🔊</button></div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const titleEl = document.getElementById('title');
+  const btnClear = document.getElementById('btnClear');
+  const btnAudio = document.getElementById('btnAudio');
+
+  let width, height, dpr;
+  function resize(){
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    width = canvas.clientWidth;
+    height = canvas.clientHeight;
+    canvas.width = Math.floor(width * dpr);
+    canvas.height = Math.floor(height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- Audio (Web Audio, gesture-gated, very soft) ----------
+  let audioCtx = null;
+  let masterGain = null;
+  let droneOsc = null, droneGain = null;
+  let soundOn = true;
+
+  function ensureAudio(){
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.14;
+    masterGain.connect(audioCtx.destination);
+
+    // soft ever-present ambient drone
+    droneOsc = audioCtx.createOscillator();
+    droneOsc.type = 'sine';
+    droneOsc.frequency.value = 110; // A2
+    droneGain = audioCtx.createGain();
+    droneGain.gain.value = 0.035;
+    droneOsc.connect(droneGain).connect(masterGain);
+    droneOsc.start();
+
+    // gentle second drone note for a soft chord
+    const osc2 = audioCtx.createOscillator();
+    osc2.type = 'sine';
+    osc2.frequency.value = 164.81; // E3
+    const g2 = audioCtx.createGain();
+    g2.gain.value = 0.025;
+    osc2.connect(g2).connect(masterGain);
+    osc2.start();
+
+    const osc3 = audioCtx.createOscillator();
+    osc3.type = 'sine';
+    osc3.frequency.value = 219.99; // A3
+    const g3 = audioCtx.createGain();
+    g3.gain.value = 0.02;
+    osc3.connect(g3).connect(masterGain);
+    osc3.start();
+  }
+
+  function toggleAudio(){
+    ensureAudio();
+    soundOn = !soundOn;
+    btnAudio.textContent = soundOn ? '🔊' : '🔇';
+    btnAudio.className = soundOn ? '' : 'off';
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (masterGain){
+      masterGain.gain.setTargetAtTime(soundOn ? 0.14 : 0, audioCtx.currentTime, 0.3);
+    }
+  }
+  btnAudio.addEventListener('click', (e)=>{ e.stopPropagation(); toggleAudio(); });
+
+  // gentle chime when a bubble pops at the top
+  function playChime(freq){
+    if (!audioCtx || !soundOn) return;
+    const t = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, t);
+    osc.frequency.exponentialRampToValueAtTime(freq * 1.5, t + 0.5);
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.09, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
+    osc.connect(g).connect(masterGain);
+    osc.start(t);
+    osc.stop(t + 0.8);
+  }
+
+  // soft pop when user clears the garden
+  function playPop(freq){
+    if (!audioCtx || !soundOn) return;
+    const t = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(freq, t);
+    osc.frequency.exponentialRampToValueAtTime(freq * 0.5, t + 0.25);
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.1, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    osc.connect(g).connect(masterGain);
+    osc.start(t);
+    osc.stop(t + 0.4);
+  }
+
+  // ---------- Gentle pastel palette ----------
+  const PASTELS = [
+    '#ffb7b2','#ffd3b6','#fff5b6','#baffc9','#bae1ff',
+    '#d7bde2','#ffc6ff','#b2dfdb','#ffe0d2','#e6e6fa',
+  ];
+  function randPastel(){ return PASTELS[Math.floor(Math.random()*PASTELS.length)]; }
+
+  // ---------- Entities ----------
+  const bubbles = [];
+  const clouds = [];
+  const sparkles = [];
+
+  function rand(min,max){ return Math.random()*(max-min)+min; }
+
+  class Cloud{
+    constructor(){
+      this.reset(true);
+    }
+    reset(first){
+      this.x = first ? rand(-200, width+200) : rand(-300, -80);
+      this.y = rand(height*0.10, height*0.55);
+      this.r = rand(60, 150);
+      this.vx = rand(0.12, 0.45);
+      this.vy = rand(-0.03, 0.03);
+      this.alpha = rand(0.25, 0.5);
+      this.offset = rand(0, Math.PI*2);
+      this.t = 0;
+    }
+    update(){
+      this.t += 0.0015;
+      this.x += this.vx;
+      this.y += this.vy + Math.sin(this.t)*0.12;
+      if (this.x > width + this.r + 80) this.reset(false);
+      if (Math.abs(this.vy) > 0.05) this.vy *= 0.95;
+    }
+    draw(){
+      ctx.save();
+      ctx.globalAlpha = this.alpha;
+      ctx.fillStyle = '#ffffff';
+      const r = this.r;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, r*0.55, 0, Math.PI*2);
+      ctx.arc(this.x + r*0.45, this.y - r*0.18, r*0.5, 0, Math.PI*2);
+      ctx.arc(this.x + r*0.95, this.y, r*0.6, 0, Math.PI*2);
+      ctx.arc(this.x + r*0.5, this.y + r*0.25, r*0.45, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  class Bubble{
+    constructor(x, y){
+      this.x = x; this.y = y;
+      this.radius = 4;
+      this.maxRadius = rand(22, 42);
+      this.growing = true;
+      this.growthRate = rand(0.9, 1.6);
+      this.color = randPastel();
+      this.hue = Math.random();
+      this.floating = false;
+      this.vx = rand(-0.7, 0.7);
+      this.vy = -rand(0.9, 1.8);
+      this.wobbleA = rand(0.4, 1.0);
+      this.wobbleS = rand(0.018, 0.035);
+      this.wobbleO = rand(0, Math.PI*2);
+      this.life = 1;      // 1 -> 0 as it ascends & fades
+      this.popped = false;
+      this.chimePlayed = false;
+    }
+    update(){
+      if (this.growing){
+        this.radius += this.growthRate;
+        if (this.radius >= this.maxRadius){
+          this.growing = false;
+          this.floating = true;
+          this.y = this.y; // anchor release point
+        }
+      }
+      if (this.floating){
+        this.x += this.vx + Math.sin(this.y*0.015 + this.wobbleO)*this.wobbleA;
+        this.y += this.vy;
+        this.vx *= 0.96;
+        this.vy *= 0.995;
+        this.wobbleO += this.wobbleS;
+        // slow fade as it climbs
+        const climb = Math.min(1, (this.maxRadius - Math.max(1, this.radius)) / 1 ); // n/a
+        // fade near top
+        if (this.y < height*0.25){
+          this.life -= 0.0022;
+        }
+        if (this.y < -60 || this.life <= 0){
+          if (!this.chimePlayed){
+            this.chimePlayed = true;
+            const f = 700 + (this.maxRadius/60)*340; // smaller = higher chime
+            playChime(f);
+          }
+          this.popped = true;
+        }
+      }
+    }
+    draw(){
+      ctx.save();
+      const alpha = this.growing ? 0.9 : (0.55 + 0.35*Math.sin(Date.now()*0.002)) * this.life;
+      ctx.globalAlpha = alpha;
+      // body
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2);
+      ctx.fillStyle = this.color;
+      ctx.fill();
+      // thin rim
+      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = 'rgba(255,255,255,.75)';
+      ctx.stroke();
+      // highlight
+      ctx.fillStyle = 'rgba(255,255,255,.55)';
+      ctx.beginPath();
+      ctx.arc(this.x - this.radius*0.28, this.y - this.radius*0.28, this.radius*0.22, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  class Sparkle{
+    constructor(x,y){
+      this.x=x;this.y=y;this.vx=rand(-.6,.6);this.vy=rand(-1.4,-.5);
+      this.life=1;this.size=rand(1.5,3.5);this.color=randPastel();
+    }
+    update(){this.x+=this.vx;this.y+=this.vy;this.vy+=.04;this.life-=.018;}
+    draw(){
+      ctx.save();ctx.globalAlpha=this.life;ctx.fillStyle=this.color;
+      ctx.beginPath();ctx.arc(this.x,this.y,this.size,0,Math.PI*2);ctx.fill();ctx.restore();
+    }
+  }
+
+  // ---------- Interaction ----------
+  let pointer = {x: width/2, y: height/2, active: false, justReleased:false};
+  let growBubble = null;
+
+  function getPos(e){
+    const r = canvas.getBoundingClientRect();
+    const cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    const cy = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
+    return {x: cx, y: cy};
+  }
+  function startBlow(e){
+    const p = getPos(e);
+    pointer.x = p.x; pointer.y = p.y; pointer.active = true;
+    ensureAudio();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    growBubble = new Bubble(p.x, p.y);
+    bubbles.push(growBubble);
+    titleEl.classList.add('fade');
+  }
+  function moveBlow(e){
+    const p = getPos(e);
+    pointer.x = p.x; pointer.y = p.y;
+    if (growBubble && growBubble.growing){
+      growBubble.x = p.x; growBubble.y = p.y;
+    }
+  }
+  function endBlow(){
+    pointer.active = false;
+    pointer.justReleased = true;
+    if (growBubble){ growBubble.growing = false; growBubble.floating = true; growBubble = null; }
+  }
+
+  const events = ['mousedown','mousemove','mouseup','mouseleave','touchstart','touchmove','touchend','touchcancel'];
+  events.forEach(ev=>{
+    canvas.addEventListener(ev, e=>{
+      if (ev.includes('touch')) e.preventDefault();
+      if (ev==='mousedown'||ev==='touchstart') startBlow(e);
+      else if (ev==='mousemove'||ev==='touchmove') moveBlow(e);
+      else if (ev==='mouseup'||ev==='touchend') endBlow();
+      else if (ev==='mouseleave'||ev==='touchcancel') endBlow();
+    }, {passive: ev.includes('move')?false:false});
+  });
+
+  btnClear.addEventListener('click', (e)=>{
+    e.stopPropagation();
+    const n = bubbles.length;
+    bubbles.length = 0;
+    sparkles.length = 0;
+    for(let i=0;i<n;i++){
+      const a = rand(0,Math.PI*2); const rr = rand(10,120);
+      for(let j=0;j<6;j++) sparkles.push(new Sparkle(width/2+Math.cos(a+j*1.05)*rr*0.3, height/2+Math.sin(a+j*1.05)*rr*0.3));
+    }
+    if(n>0) playPop(600 + Math.random()*300);
+  });
+
+  // ---------- Rendering ----------
+  function drawGround(){
+    // soft hill band at bottom
+    const grad = ctx.createLinearGradient(0, height*0.62, 0, height);
+    grad.addColorStop(0, 'rgba(216,232,241,0)');
+    grad.addColorStop(1, 'rgba(190,218,225,.55)');
+    ctx.fillStyle = grad; ctx.fillRect(0, height*0.62, width, height*0.38);
+
+    // faint rake lines (zen garden) very subtle, slowly shifting
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,.5)';
+    ctx.lineWidth = 1.2;
+    const t = Date.now()*0.0004;
+    ctx.beginPath();
+    for(let i=0;i<width;i+=34){
+      const h = Math.sin(i*0.006 + t)*10 + (i/width)*height*0.12;
+      ctx.moveTo(i, height*0.72 + h);
+      ctx.lineTo(i+18, height*0.78 + Math.sin((i+18)*0.006+t)*10);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawFrame(){
+    // sky gradient background each frame (canvas is opaque, CSS bg hidden behind it)
+    const sky = ctx.createLinearGradient(0, 0, 0, height);
+    sky.addColorStop(0, '#f4e7e7');
+    sky.addColorStop(0.5, '#e8dff0');
+    sky.addColorStop(1, '#dcedf1');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, width, height);
+
+    // update + draw clouds as background layer (behind everything)
+    clouds.forEach(c=>{ c.update(); c.draw(); });
+
+    drawGround();
+
+    // bubbles
+    bubbles.forEach(b=>{ b.update(); b.draw(); });
+
+    // sparkles
+    for(let i=sparkles.length-1;i>=0;i--){
+      const s=sparkles[i]; s.update(); s.draw();
+      if(s.life<=0) sparkles.splice(i,1);
+    }
+
+    // gently blow bubbles toward pointer while growing
+    if (growBubble && growBubble.growing){
+      // subtle breathing ring under the growing bubble
+      ctx.save();
+      const breath = 1 + 0.12*Math.sin(Date.now()*0.004);
+      ctx.strokeStyle = growBubble.color;
+      ctx.globalAlpha = 0.35*breath;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(growBubble.x, growBubble.y, growBubble.radius*1.5*breath, 0, Math.PI*2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // pointer glow when holding
+    if (pointer.active){
+      ctx.save();
+      const pulse = 0.35 + 0.25*Math.sin(Date.now()*0.005);
+      ctx.fillStyle = 'rgba(255,183,178,'+pulse+')';
+      ctx.beginPath();
+      ctx.arc(pointer.x, pointer.y, 12 + 6*Math.sin(Date.now()*0.003), 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    requestAnimationFrame(drawFrame);
+  }
+
+  // seed clouds
+  for(let i=0;i<6;i++) clouds.push(new Cloud());
+
+  // start
+  let started = false;
+  function boot(){
+    if(started) return; started = true;
+    ensureAudio();
+    drawFrame();
+  }
+  // boot on first interaction or load
+  window.addEventListener('pointerdown', boot, {once:true});
+  window.addEventListener('keydown', boot, {once:true});
+  requestAnimationFrame(()=>{ if(!started){ boot(); } });
+
+  // expose minimal global for console play
+  window.__garden = { bubbles, playChime, playPop, toggleAudio };
+
+})();
+</script>
+</body>
+</html>
