@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1b263b">
+<title>Still Water — the calmest game</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ccircle cx=%2750%27 cy=%2750%27 r=%2740%27 fill=%27%23ffd6a5%27/%3E%3C/svg%3E">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #0d1b2a; }
+  body { font-family: "Cormorant Garamond", "EB Garamond", Georgia, serif; color: #e8e4dc; -webkit-font-smoothing: antialiased; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .veil { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: radial-gradient(ellipse at center, rgba(13,27,42,0.55), rgba(13,27,42,0.92)); backdrop-filter: blur(2px); z-index: 10; transition: opacity 1.6s ease, visibility 1.6s ease; cursor: pointer; }
+  .veil.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+  .title { font-size: clamp(2.2rem, 6vw, 4rem); font-weight: 300; letter-spacing: 0.18em; text-transform: uppercase; color: #e8e4dc; text-shadow: 0 0 40px rgba(168,216,234,0.35); }
+  .subtitle { font-size: clamp(0.95rem, 2vw, 1.2rem); font-weight: 300; letter-spacing: 0.24em; color: #b8c9e8; opacity: 0.85; }
+  .hint { margin-top: 24px; font-size: 0.9rem; letter-spacing: 0.18em; color: #9aa7c4; opacity: 0.7; animation: breathe 3.6s ease-in-out infinite; }
+  @keyframes breathe { 0%,100%{opacity:0.45} 50%{opacity:0.85} }
+  .corner { position: fixed; z-index: 5; display: flex; gap: 10px; padding: 14px; }
+  .corner.tr { top: 0; right: 0; }
+  button.icon { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #e8e4dc; width: 40px; height: 40px; border-radius: 50%; cursor: pointer; font-family: inherit; font-size: 1rem; display: grid; place-items: center; transition: background 0.3s ease, transform 0.3s ease; backdrop-filter: blur(6px); }
+  button.icon:hover { background: rgba(255,255,255,0.14); transform: scale(1.06); }
+  .wishbar { position: fixed; bottom: 18px; right: 18px; z-index: 5; display: flex; align-items: center; gap: 8px; font-size: 0.8rem; letter-spacing: 0.16em; color: #b8c9e8; opacity: 0.75; }
+  .wishdots { display: flex; gap: 6px; }
+  .wishdots span { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,0.18); transition: background 0.6s ease, box-shadow 0.6s ease; }
+  .wishdots span.lit { background: #ffd6a5; box-shadow: 0 0 10px #ffd6a5; }
+  .msg { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index: 6; font-size: clamp(1.2rem,3vw,1.8rem); letter-spacing: 0.24em; color: #ffd6a5; text-shadow: 0 0 30px rgba(255,214,165,0.5); pointer-events: none; opacity: 0; transition: opacity 1.2s ease; }
+  .msg.show { opacity: 1; }
+  @media (max-width: 600px) { .corner { padding: 10px; } button.icon { width: 36px; height: 36px; } }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400&display=swap" rel="stylesheet">
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="veil" id="veil">
+  <div class="title">Still Water</div>
+  <div class="subtitle">a game with nothing to win</div>
+  <div class="hint">tap to enter · move slowly</div>
+</div>
+
+<div class="corner tr">
+  <button class="icon" id="muteBtn" aria-label="mute">🔊</button>
+  <button class="icon" id="resetBtn" aria-label="reset garden">↺</button>
+</div>
+
+<div class="wishbar">
+  <div class="wishdots" id="wishdots"></div>
+</div>
+
+<div class="msg" id="msg"></div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let W = 0, H = 0, dpr = 1;
+  const state = {
+    started: false,
+    muted: false,
+    time: 0,
+    pointer: { x: 0, y: 0, tx: 0, ty: 0, active: false, down: false },
+    orb: { x: 0, y: 0, trail: [] },
+    ripples: [],
+    fish: [],
+    flowers: [],
+    fireflies: [],
+    wishes: 0,
+    msgTimer: 0,
+    lastRipple: 0,
+    lastChime: 0,
+    lastWord: 0,
+    autoAngle: 0,
+    petals: [],
+  };
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (!state.started) {
+      state.orb.x = state.pointer.x = state.pointer.tx = W * 0.5;
+      state.orb.y = state.pointer.y = state.pointer.ty = H * 0.62;
+    }
+  }
+  window.addEventListener('resize', resize);
+
+  function hexToRgb(h) {
+    const v = h.replace('#',''); const n = parseInt(v,16);
+    return [(n>>16)&255, (n>>8)&255, n&255];
+  }
+  function lerp(a,b,t){ return a + (b-a)*t; }
+  function lerpColor(c1,c2,t){
+    const a=hexToRgb(c1), b=hexToRgb(c2);
+    return `rgb(${Math.round(lerp(a[0],b[0],t))},${Math.round(lerp(a[1],b[1],t))},${Math.round(lerp(a[2],b[2],t))})`;
+  }
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  const skyKeys = [
+    { t: 0.00, top: '#a8d8ea', bot: '#e8f4f8' },
+    { t: 0.25, top: '#ffb4a2', bot: '#c9a0dc' },
+    { t: 0.50, top: '#0d1b2a', bot: '#1b263b' },
+    { t: 0.75, top: '#ffd6a5', bot: '#b8c9e8' },
+    { t: 1.00, top: '#a8d8ea', bot: '#e8f4f8' },
+  ];
+  function skyAt(phase) {
+    phase = ((phase % 1) + 1) % 1;
+    if (phase >= 0.9999) phase = 0;
+    let i = 0;
+    for (; i < skyKeys.length-2; i++) if (phase >= skyKeys[i].t && phase < skyKeys[i+1].t) break;
+    if (i > skyKeys.length-2) i = skyKeys.length-2;
+    const a = skyKeys[i], b = skyKeys[i+1];
+    const seg = (phase - a.t) / (b.t - a.t);
+    const t = clamp(seg, 0, 1);
+    return { top: lerpColor(a.top, b.top, t), bot: lerpColor(a.bot, b.bot, t) };
+  }
+
+  function initEntities() {
+    state.fish = [];
+    const colors = ['#f4a261','#e9c46a','#ffffff','#e76f51','#2a9d8f','#f6bd60'];
+    for (let i = 0; i < 7; i++) {
+      state.fish.push({
+        x: Math.random()*W, y: H*0.55 + Math.random()*H*0.4,
+        angle: Math.random()*Math.PI*2,
+        speed: 0.25 + Math.random()*0.45,
+        size: 0.8 + Math.random()*0.6,
+        color: colors[i % colors.length],
+        phase: Math.random()*10,
+        turnTimer: 0,
+      });
+    }
+    state.flowers = [];
+    for (let i = 0; i < 5; i++) {
+      state.flowers.push({
+        x: W*0.15 + Math.random()*W*0.7,
+        y: H*0.6 + Math.random()*H*0.3,
+        bloom: 1, phase: Math.random()*10, sway: Math.random()*Math.PI*2,
+      });
+    }
+    state.fireflies = [];
+    for (let i = 0; i < 18; i++) {
+      state.fireflies.push({
+        x: Math.random()*W, y: Math.random()*H*0.7,
+        vx: (Math.random()-0.5)*0.4, vy: (Math.random()-0.5)*0.4,
+        phase: Math.random()*Math.PI*2,
+        size: 1.5 + Math.random()*1.5,
+        alive: true,
+      });
+    }
+    state.ripples = [];
+    state.orb.trail = [];
+    state.wishes = 0;
+    state.petals = [];
+    for (let i = 0; i < 14; i++) {
+      state.petals.push({
+        x: Math.random()*W, y: H*0.52 + Math.random()*H*0.48,
+        vx: (Math.random()-0.5)*0.15, vy: 0.05 + Math.random()*0.12,
+        rot: Math.random()*Math.PI*2, rs: (Math.random()-0.5)*0.02,
+        size: 3 + Math.random()*4, alpha: 0.35 + Math.random()*0.3,
+      });
+    }
+    updateWishDots();
+  }
+
+  function updateWishDots() {
+    const el = document.getElementById('wishdots');
+    el.innerHTML = '';
+    for (let i = 0; i < 7; i++) {
+      const s = document.createElement('span');
+      if (i < state.wishes) s.classList.add('lit');
+      el.appendChild(s);
+    }
+  }
+
+  function showMessage(text) {
+    const m = document.getElementById('msg');
+    m.textContent = text;
+    m.classList.add('show');
+    clearTimeout(state._msgT);
+    state._msgT = setTimeout(() => m.classList.remove('show'), 3200);
+  }
+
+  let audioCtx = null, masterGain = null, convolver = null;
+  let padFilter = null;
+  const pentatonic = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33, 659.25];
+  function initAudio() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = state.muted ? 0 : 0.28;
+
+    convolver = audioCtx.createConvolver();
+    const len = Math.floor(audioCtx.sampleRate * 2.2);
+    const buf = audioCtx.createBuffer(2, len, audioCtx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = buf.getChannelData(ch);
+      for (let i = 0; i < len; i++) d[i] = (Math.random()*2 - 1) * Math.pow(1 - i/len, 3.2);
+    }
+    convolver.buffer = buf;
+    const dry = audioCtx.createGain(); dry.gain.value = 0.62;
+    const wet = audioCtx.createGain(); wet.gain.value = 0.38;
+    masterGain.connect(dry); dry.connect(audioCtx.destination);
+    masterGain.connect(convolver); convolver.connect(wet); wet.connect(audioCtx.destination);
+
+    padFilter = audioCtx.createBiquadFilter();
+    padFilter.type = 'lowpass'; padFilter.frequency.value = 720; padFilter.Q.value = 0.7;
+    padFilter.connect(masterGain);
+    const padNotes = [130.81, 196.00, 261.63, 329.63];
+    padNotes.forEach((f, i) => {
+      const osc = audioCtx.createOscillator();
+      osc.type = 'sine'; osc.frequency.value = f;
+      const g = audioCtx.createGain(); g.gain.value = 0.06;
+      const lfo = audioCtx.createOscillator(); lfo.frequency.value = 0.04 + i*0.017;
+      const lg = audioCtx.createGain(); lg.gain.value = 0.035;
+      lfo.connect(lg); lg.connect(g.gain);
+      osc.connect(g); g.connect(padFilter);
+      osc.start(); lfo.start();
+    });
+
+    scheduleChime();
+  }
+  function scheduleChime() {
+    if (!audioCtx) return;
+    const delay = 3500 + Math.random()*4500;
+    setTimeout(() => {
+      if (audioCtx && !state.muted) {
+        const f = pentatonic[Math.floor(Math.random()*pentatonic.length)];
+        chime(f, 0.12);
+      }
+      scheduleChime();
+    }, delay);
+  }
+  function chime(freq, vol = 0.16) {
+    if (!audioCtx || state.muted) return;
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sine'; osc.frequency.value = freq;
+    const g = audioCtx.createGain();
+    const t = audioCtx.currentTime;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.03);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 2.8);
+    osc.connect(g); g.connect(masterGain);
+    osc.start(t); osc.stop(t + 2.9);
+    const osc2 = audioCtx.createOscillator();
+    osc2.type = 'sine'; osc2.frequency.value = freq*2;
+    const g2 = audioCtx.createGain();
+    g2.gain.setValueAtTime(0.0001, t);
+    g2.gain.exponentialRampToValueAtTime(vol*0.35, t+0.05);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t+2.0);
+    osc2.connect(g2); g2.connect(masterGain);
+    osc2.start(t); osc2.stop(t+2.1);
+  }
+
+  function setMuted(m) {
+    state.muted = m;
+    if (masterGain) masterGain.gain.setTargetAtTime(m ? 0 : 0.28, audioCtx.currentTime, 0.2);
+    document.getElementById('muteBtn').textContent = m ? '🔇' : '🔊';
+  }
+
+  function toLocal(e) {
+    const r = canvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left), y: (e.clientY - r.top) };
+  }
+  canvas.addEventListener('pointerdown', (e) => {
+    canvas.setPointerCapture(e.pointerId);
+    const p = toLocal(e);
+    state.pointer.tx = p.x; state.pointer.ty = p.y; state.pointer.active = true; state.pointer.down = true;
+    spawnFlower(p.x, p.y);
+    if (!state.started) startGame();
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    const p = toLocal(e);
+    state.pointer.tx = p.x; state.pointer.ty = p.y; state.pointer.active = true;
+  });
+  canvas.addEventListener('pointerup', (e) => { state.pointer.down = false; });
+  canvas.addEventListener('pointerleave', () => { state.pointer.active = false; });
+
+  document.getElementById('veil').addEventListener('click', () => startGame());
+  document.getElementById('muteBtn').addEventListener('click', (e) => { e.stopPropagation(); setMuted(!state.muted); });
+  document.getElementById('resetBtn').addEventListener('click', (e) => { e.stopPropagation(); initEntities(); showMessage('garden renewed'); });
+
+  function startGame() {
+    if (state.started) return;
+    state.started = true;
+    document.getElementById('veil').classList.add('hidden');
+    initAudio();
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    initEntities();
+    state.orb.x = state.pointer.tx = (state.pointer.tx || W*0.5);
+    state.orb.y = state.pointer.ty = (state.pointer.ty || H*0.62);
+    showMessage('breathe');
+  }
+
+  function spawnFlower(x, y) {
+    if (!state.started) return;
+    if (state.flowers.length > 22) state.flowers.shift();
+    state.flowers.push({ x, y, bloom: 0, phase: Math.random()*10, sway: Math.random()*Math.PI*2 });
+    chime(pentatonic[Math.floor(Math.random()*pentatonic.length)], 0.13);
+    state.ripples.push({ x, y, r: 0, alpha: 0.5 });
+  }
+
+  function spawnRipple(x, y) {
+    state.ripples.push({ x, y, r: 0, alpha: 0.35 });
+  }
+
+  function update(dt) {
+    state.time += dt;
+    const t = state.time;
+
+    if (!state.pointer.active) {
+      state.autoAngle += dt * 0.18;
+      state.pointer.tx = W*0.5 + Math.cos(state.autoAngle)*W*0.18;
+      state.pointer.ty = H*0.62 + Math.sin(state.autoAngle*0.7)*H*0.12;
+    }
+    state.pointer.x += (state.pointer.tx - state.pointer.x) * 0.06;
+    state.pointer.y += (state.pointer.ty - state.pointer.y) * 0.06;
+
+    const prevX = state.orb.x, prevY = state.orb.y;
+    state.orb.x += (state.pointer.x - state.orb.x) * 0.09;
+    state.orb.y += (state.pointer.y - state.orb.y) * 0.09;
+    state.orb.trail.unshift({ x: state.orb.x, y: state.orb.y });
+    if (state.orb.trail.length > 26) state.orb.trail.pop();
+    const speed = Math.hypot(state.orb.x - prevX, state.orb.y - prevY);
+    if (speed > 0.6 && t - state.lastRipple > 0.08) {
+      spawnRipple(state.orb.x, state.orb.y);
+      state.lastRipple = t;
+    }
+
+    for (let i = state.ripples.length - 1; i >= 0; i--) {
+      const r = state.ripples[i];
+      r.r += dt * 60;
+      r.alpha -= dt * 0.22;
+      if (r.alpha <= 0) state.ripples.splice(i, 1);
+    }
+
+    for (const f of state.flowers) {
+      if (f.bloom < 1) f.bloom = Math.min(1, f.bloom + dt * 0.9);
+      f.sway += dt * 0.6;
+    }
+
+    for (const f of state.fish) {
+      f.phase += dt;
+      f.turnTimer -= dt;
+      if (f.turnTimer <= 0) {
+        f.turnTimer = 1.5 + Math.random()*3;
+        f.angle += (Math.random()-0.5)*0.9;
+      }
+      f.angle += Math.sin(f.phase*0.7)*0.008;
+      const dx = state.orb.x - f.x, dy = state.orb.y - f.y;
+      const d = Math.hypot(dx, dy);
+      if (d < 260 && d > 1) {
+        const target = Math.atan2(dy, dx);
+        let diff = target - f.angle;
+        while (diff > Math.PI) diff -= Math.PI*2;
+        while (diff < -Math.PI) diff += Math.PI*2;
+        f.angle += diff * 0.0015;
+      }
+      f.x += Math.cos(f.angle)*f.speed;
+      f.y += Math.sin(f.angle)*f.speed;
+      const margin = 50;
+      if (f.x < margin) { f.x = margin; f.angle = Math.PI - f.angle; }
+      if (f.x > W - margin) { f.x = W - margin; f.angle = Math.PI - f.angle; }
+      if (f.y < H*0.45) { f.y = H*0.45; f.angle = -f.angle; }
+      if (f.y > H - margin) { f.y = H - margin; f.angle = -f.angle; }
+    }
+
+    for (const ff of state.fireflies) {
+      if (!ff.alive) continue;
+      ff.phase += dt * 1.6;
+      ff.vx += (Math.random()-0.5)*0.03;
+      ff.vy += (Math.random()-0.5)*0.03;
+      const sp = Math.hypot(ff.vx, ff.vy);
+      if (sp > 0.6) { ff.vx *= 0.6/sp; ff.vy *= 0.6/sp; }
+      ff.x += ff.vx; ff.y += ff.vy;
+      if (ff.x < 0) ff.x = W; if (ff.x > W) ff.x = 0;
+      if (ff.y < 0) ff.y = H*0.75; if (ff.y > H*0.8) ff.y = 0;
+      const d = Math.hypot(ff.x - state.orb.x, ff.y - state.orb.y);
+      if (d < 34) {
+        ff.alive = false;
+        state.wishes = Math.min(7, state.wishes + 1);
+        updateWishDots();
+        chime(pentatonic[2 + Math.floor(Math.random()*4)], 0.15);
+        state.ripples.push({ x: ff.x, y: ff.y, r: 0, alpha: 0.6 });
+        setTimeout(() => {
+          ff.x = Math.random()*W; ff.y = Math.random()*H*0.6;
+          ff.vx = (Math.random()-0.5)*0.4; ff.vy = (Math.random()-0.5)*0.4;
+          ff.alive = true;
+        }, 1200);
+        if (state.wishes >= 7) {
+          state.wishes = 0;
+          updateWishDots();
+          showMessage('a wish drifts upward');
+          for (let k = 0; k < 5; k++) {
+            state.ripples.push({ x: state.orb.x, y: state.orb.y, r: k*12, alpha: 0.5 });
+          }
+          chime(523.25, 0.18);
+        }
+      }
+    }
+
+    // petals drift
+    for (const pt of state.petals) {
+      pt.x += pt.vx; pt.y += pt.vy;
+      pt.rot += pt.rs;
+      pt.vx += (Math.random()-0.5)*0.002;
+      if (pt.x < -20) pt.x = W+20;
+      if (pt.x > W+20) pt.x = -20;
+      if (pt.y > H+20) { pt.y = H*0.52; pt.x = Math.random()*W; }
+    }
+
+    // occasional calm word
+    if (t - state.lastWord > 28 + Math.random()*14) {
+      const words = ['breathe', 'slowly', 'let go', 'rest', 'still', 'soft'];
+      showMessage(words[Math.floor(Math.random()*words.length)]);
+      state.lastWord = t;
+    }
+
+    if (state.msgTimer > 0) state.msgTimer -= dt;
+
+    if (t - state.lastChime > 6) {
+      const near = state.flowers.some(f => Math.hypot(f.x-state.orb.x, f.y-state.orb.y) < 120);
+      if (near && Math.random() < 0.4) {
+        chime(pentatonic[Math.floor(Math.random()*pentatonic.length)], 0.1);
+        state.lastChime = t;
+      }
+    }
+  }
+
+  function render() {
+    const t = state.time;
+    const phase = (t / 120) % 1;
+    const sky = skyAt(phase);
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, sky.top);
+    g.addColorStop(1, sky.bot);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    // celestial body
+    {
+      const dayAmt = (Math.cos(phase*Math.PI*2)+1)/2;
+      const cx = W*0.78, cy = H*0.18;
+      const r = 26;
+      const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, r*4);
+      if (dayAmt > 0.5) {
+        grd.addColorStop(0, `rgba(255,230,170,${0.9*dayAmt})`);
+        grd.addColorStop(0.4, `rgba(255,200,120,${0.35*dayAmt})`);
+        grd.addColorStop(1, 'rgba(255,200,120,0)');
+      } else {
+        const na = 1-dayAmt;
+        grd.addColorStop(0, `rgba(230,235,255,${0.85*na})`);
+        grd.addColorStop(0.4, `rgba(180,190,230,${0.3*na})`);
+        grd.addColorStop(1, 'rgba(180,190,230,0)');
+      }
+      ctx.fillStyle = grd;
+      ctx.beginPath(); ctx.arc(cx, cy, r*4, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = dayAmt>0.5 ? '#fff3c4' : '#e8ecff';
+      ctx.beginPath(); ctx.arc(cx, cy, r*(dayAmt>0.5?1:0.85), 0, Math.PI*2); ctx.fill();
+    }
+
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    const hillY = H * 0.55;
+    ctx.fillStyle = lerpColor(sky.bot, '#000000', 0.25);
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    for (let x = 0; x <= W; x += 40) {
+      const y = hillY + Math.sin(x*0.003 + t*0.05)*18 + Math.sin(x*0.011)*12;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+    ctx.restore();
+
+    const waterTop = H * 0.52;
+    const wg = ctx.createLinearGradient(0, waterTop, 0, H);
+    wg.addColorStop(0, lerpColor(sky.bot, '#000000', 0.15));
+    wg.addColorStop(1, lerpColor(sky.bot, '#000000', 0.45));
+    ctx.fillStyle = wg;
+    ctx.fillRect(0, waterTop, W, H - waterTop);
+
+    ctx.save();
+    ctx.globalAlpha = 0.12;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 6; i++) {
+      const y = waterTop + (i+1)*(H-waterTop)/7;
+      ctx.beginPath();
+      for (let x = 0; x <= W; x += 8) {
+        const yy = y + Math.sin(x*0.012 + t*0.4 + i)*3;
+        if (x === 0) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    for (const f of state.flowers) {
+      const bloom = f.bloom;
+      if (bloom <= 0.01) continue;
+      const sway = Math.sin(f.sway)*0.08;
+      ctx.save();
+      ctx.translate(f.x, f.y);
+      ctx.rotate(sway);
+      ctx.strokeStyle = 'rgba(60,90,70,0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0, 0); ctx.lineTo(0, 18);
+      ctx.stroke();
+      const petals = 8;
+      const r = 14 * bloom;
+      for (let i = 0; i < petals; i++) {
+        const a = (i/petals)*Math.PI*2;
+        ctx.save();
+        ctx.rotate(a);
+        ctx.fillStyle = `rgba(255, 200, 210, ${0.55*bloom})`;
+        ctx.beginPath();
+        ctx.ellipse(r*0.6, 0, r*0.6, r*0.28, 0, 0, Math.PI*2);
+        ctx.fill();
+        ctx.restore();
+      }
+      ctx.fillStyle = `rgba(255, 214, 165, ${0.9*bloom})`;
+      ctx.beginPath(); ctx.arc(0, 0, 4*bloom, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+
+    for (const f of state.fish) {
+      ctx.save();
+      ctx.translate(f.x, f.y);
+      ctx.rotate(f.angle);
+      const s = f.size;
+      ctx.fillStyle = f.color;
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 14*s, 5*s, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-12*s, 0);
+      ctx.lineTo(-20*s, -6*s);
+      ctx.lineTo(-20*s, 6*s);
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.beginPath(); ctx.arc(8*s, -1*s, 1.6*s, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+
+    for (const r of state.ripples) {
+      ctx.save();
+      ctx.globalAlpha = r.alpha;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, r.r, 0, Math.PI*2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    for (let i = 0; i < state.orb.trail.length; i++) {
+      const p = state.orb.trail[i];
+      const a = (1 - i/state.orb.trail.length) * 0.35;
+      const rad = 6 - i*0.15;
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.fillStyle = '#ffd6a5';
+      ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(1, rad), 0, Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+    const orbGlow = ctx.createRadialGradient(state.orb.x, state.orb.y, 0, state.orb.x, state.orb.y, 40);
+    orbGlow.addColorStop(0, 'rgba(255,214,165,0.9)');
+    orbGlow.addColorStop(0.4, 'rgba(255,214,165,0.35)');
+    orbGlow.addColorStop(1, 'rgba(255,214,165,0)');
+    ctx.fillStyle = orbGlow;
+    ctx.beginPath(); ctx.arc(state.orb.x, state.orb.y, 40, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#fff6e8';
+    ctx.beginPath(); ctx.arc(state.orb.x, state.orb.y, 4, 0, Math.PI*2); ctx.fill();
+
+    for (const ff of state.fireflies) {
+      if (!ff.alive) continue;
+      const glow = (Math.sin(ff.phase)+1)/2;
+      const alpha = 0.4 + glow*0.6;
+      const rad = ff.size * (0.9 + glow*0.4);
+      const g2 = ctx.createRadialGradient(ff.x, ff.y, 0, ff.x, ff.y, rad*4);
+      g2.addColorStop(0, `rgba(255,240,180,${alpha})`);
+      g2.addColorStop(0.5, `rgba(255,214,165,${alpha*0.4})`);
+      g2.addColorStop(1, 'rgba(255,214,165,0)');
+      ctx.fillStyle = g2;
+      ctx.beginPath(); ctx.arc(ff.x, ff.y, rad*4, 0, Math.PI*2); ctx.fill();
+    }
+
+    // petals
+    for (const pt of state.petals) {
+      ctx.save();
+      ctx.translate(pt.x, pt.y);
+      ctx.rotate(pt.rot);
+      ctx.globalAlpha = pt.alpha;
+      ctx.fillStyle = '#f7c6d0';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, pt.size, pt.size*0.5, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    const vig = ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.35, W/2, H/2, Math.max(W,H)*0.75);
+    vig.addColorStop(0, 'rgba(0,0,0,0)');
+    vig.addColorStop(1, 'rgba(0,0,0,0.45)');
+    ctx.fillStyle = vig;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min(0.05, (now - last)/1000);
+    last = now;
+    if (state.started) update(dt);
+    else {
+      state.time += dt;
+      state.autoAngle += dt*0.12;
+      state.orb.x = W*0.5 + Math.cos(state.autoAngle)*W*0.12;
+      state.orb.y = H*0.62 + Math.sin(state.autoAngle*0.7)*H*0.08;
+    }
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  resize();
+  initEntities();
+  requestAnimationFrame(loop);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    last = performance.now();
+  });
+})();
+</script>
+</body>
+</html>
